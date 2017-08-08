@@ -19,7 +19,7 @@ object Configuration {
       val endpoint = config.aws.s3.endpoint.asOption[String]
       val bucket = config.aws.s3.bucket.as[String]
 
-      val defaultChunksize = 6291456
+      val defaultChunksize = 5 * 1024 * 1024 // 5MB
       val chunksize = config.aws.s3.chunksize.asOption[Int].getOrElse(defaultChunksize)
     }
   }
