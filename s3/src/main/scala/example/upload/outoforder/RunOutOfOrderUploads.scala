@@ -26,6 +26,9 @@ object RunOutOfOrderUploads extends App with LazyLogging {
   implicit val mat = ActorMaterializer()
   import system.dispatcher
 
+
+  // generate a block of text that is a little bigger than the minimum chunk size (5mb)
+  // add a tag so you can see in the output file that this is where it really started
   def SourceText = {
     """\START-OF-DATA/""" +: Random.alphanumeric.take(aws.s3.chunksize + ModifiedStream.Header.length).grouped(40).map(_.mkString).toSeq
   }
@@ -44,6 +47,8 @@ object RunOutOfOrderUploads extends App with LazyLogging {
 }
 
 object ModifiedStream {
+  // here is the mock header, just static text for now
+  // will calculate based on the stream in later iteration
   val Header = "---insert-header-here---"
 
   def apply() = new ModifiedStream(S3ClientStream.configureClient)
@@ -71,6 +76,9 @@ class ModifiedStream(s3Client: AmazonS3) {
         }
       }
     }
+    // take a look at the part number
+    // if the first one, we are going to stash it
+    // if a later part, go ahead and upload it
     .map {
       case p if p.getPartNumber > 1 ⇒
         Right(s3Client.uploadPart(p).getPartETag)
@@ -78,19 +86,27 @@ class ModifiedStream(s3Client: AmazonS3) {
         Left(p)
     }
     .runWith(Sink.seq)
+    // all but the first part is now uploaded
     .flatMap { in ⇒
+      // hack out the first part
       in.find(_.isLeft) match {
         case Some(Left(h)) ⇒
           val etags = in.filter(_.isRight).map(_.right.get)
 
+          // grab the input stream from the first part so it can have the header prepended
+          // aws requires a minimum size but nothing stops us from increasing past that here
           StreamConverters.fromInputStream(h.getInputStream, aws.s3.chunksize)
           .via(S3ClientStream.rechunk(aws.s3.chunksize))
           .map { s ⇒
+            // put the mock header in front of the original stream and update the size
             val bs = ByteString(ModifiedStream.Header) ++ s
             h.withInputStream(bs.iterator.asInputStream).withPartSize(bs.length)
           }.runWith(Sink.head).map { h ⇒
+            // upload it
             val headtag = s3Client.uploadPart(h).getPartETag
             val alltags = headtag +: etags
+
+            // complete the entire upload and s3 will assemble the parts
             s3Client.completeMultipartUpload(
               new CompleteMultipartUploadRequest(bucket, key, initUpload.getUploadId, alltags.asJava)
             )
