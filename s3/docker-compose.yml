@@ -1,0 +1,5 @@
+minio:
+  image: jwiii/openshift-minio
+  user: root
+  ports:
+    - 10001:9000
